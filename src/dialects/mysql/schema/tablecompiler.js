@@ -4,7 +4,6 @@
 // -------
 import inherits from 'inherits';
 import TableCompiler from '../../../schema/tablecompiler';
-import * as helpers from '../../../helpers';
 import Promise from 'bluebird';
 
 import { assign } from 'lodash'
@@ -41,7 +40,7 @@ assign(TableCompiler_MySQL.prototype, {
 
     if (this.single.comment) {
       const comment = (this.single.comment || '');
-      if (comment.length > 60) helpers.warn('The max length for a table comment is 60 characters');
+      if (comment.length > 60) this.client.logger.warn('The max length for a table comment is 60 characters');
       sql += ` comment = '${comment}'`;
     }
 
@@ -111,7 +110,7 @@ assign(TableCompiler_MySQL.prototype, {
   },
 
   getFKRefs (runner) {
-    const formatter = this.client.formatter();
+    const formatter = this.client.formatter(this.tableBuilder);
     const sql = 'SELECT KCU.CONSTRAINT_NAME, KCU.TABLE_NAME, KCU.COLUMN_NAME, '+
               '       KCU.REFERENCED_TABLE_NAME, KCU.REFERENCED_COLUMN_NAME, '+
               '       RC.UPDATE_RULE, RC.DELETE_RULE '+
@@ -129,7 +128,7 @@ assign(TableCompiler_MySQL.prototype, {
   },
 
   dropFKRefs (runner, refs) {
-    const formatter = this.client.formatter();
+    const formatter = this.client.formatter(this.tableBuilder);
 
     return Promise.all(refs.map(function (ref) {
       const constraintName = formatter.wrap(ref.CONSTRAINT_NAME);
@@ -140,7 +139,7 @@ assign(TableCompiler_MySQL.prototype, {
     }));
   },
   createFKRefs (runner, refs) {
-    const formatter = this.client.formatter();
+    const formatter = this.client.formatter(this.tableBuilder);
 
     return Promise.all(refs.map(function (ref) {
       const tableName = formatter.wrap(ref.TABLE_NAME);

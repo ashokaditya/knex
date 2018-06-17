@@ -1,7 +1,7 @@
 
 // PostgreSQL
 // -------
-import { assign, map, extend } from 'lodash'
+import { assign, map, extend, isArray, isString, includes } from 'lodash'
 import inherits from 'inherits';
 import Client from '../../client';
 import Promise from 'bluebird';
@@ -91,11 +91,18 @@ assign(Client_PG.prototype, {
     }
   }),
 
-  wrapIdentifier(value) {
+  wrapIdentifierImpl(value) {
     if (value === '*') return value;
-    const matched = value.match(/(.*?)(\[[0-9]\])/);
-    if (matched) return this.wrapIdentifier(matched[1]) + matched[2];
-    return `"${value.replace(/"/g, '""')}"`;
+
+    let arrayAccessor = '';
+    const arrayAccessorMatch = value.match(/(.*?)(\[[0-9]+\])/);
+
+    if (arrayAccessorMatch) {
+      value = arrayAccessorMatch[1];
+      arrayAccessor = arrayAccessorMatch[2];
+    }
+
+    return `"${value.replace(/"/g, '""')}"${arrayAccessor}`;
   },
 
   // Get a raw connection, called by the `pool` whenever a new
@@ -130,7 +137,7 @@ assign(Client_PG.prototype, {
   // Used to explicitly close a connection, called internally by the pool
   // when a connection times out or the pool is shutdown.
   destroyRawConnection(connection) {
-    connection.end()
+    return Promise.fromCallback(connection.end.bind(connection))
   },
 
   // In PostgreSQL, we need to do a version check to do some feature
@@ -159,12 +166,30 @@ assign(Client_PG.prototype, {
   },
 
   setSchemaSearchPath(connection, searchPath) {
-    const path = (searchPath || this.searchPath);
+    let path = (searchPath || this.searchPath);
 
     if (!path) return Promise.resolve(true);
 
+    if(!isArray(path) && !isString(path)) {
+      throw new TypeError(`knex: Expected searchPath to be Array/String, got: ${typeof path}`);
+    }
+
+    if(isString(path)) {
+      if(includes(path, ',')) {
+        const parts = path.split(',');
+        const arraySyntax = `[${map(parts, (searchPath) => `'${searchPath}'`).join(', ')}]`;
+        this.logger.warn(
+          `Detected comma in searchPath "${path}".`
+          +
+          `If you are trying to specify multiple schemas, use Array syntax: ${arraySyntax}`);
+      }
+      path = [path];
+    }
+
+    path = map(path, (schemaName) => `"${schemaName}"`).join(',');
+
     return new Promise(function(resolver, rejecter) {
-      connection.query(`set search_path to "${path}"`, function(err) {
+      connection.query(`set search_path to ${path}`, function(err) {
         if (err) return rejecter(err);
         resolver(true);
       });
@@ -173,7 +198,7 @@ assign(Client_PG.prototype, {
 
   _stream(connection, obj, stream, options) {
     const PGQueryStream = process.browser ? undefined : require('pg-query-stream');
-    const sql = obj.sql = this.positionBindings(obj.sql)
+    const sql = obj.sql;
     return new Promise(function(resolver, rejecter) {
       const queryStream = connection.query(new PGQueryStream(sql, obj.bindings, options));
       queryStream.on('error', function(error) { stream.emit('error', error); });
@@ -192,7 +217,7 @@ assign(Client_PG.prototype, {
   // Runs the query on the specified connection, providing the bindings
   // and any other necessary prep work.
   _query(connection, obj) {
-    let sql = obj.sql = this.positionBindings(obj.sql)
+    let sql = obj.sql;
     if (obj.options) sql = extend({text: sql}, obj.options);
     return new Promise(function(resolver, rejecter) {
       connection.query(sql, obj.bindings, function(err, response) {
@@ -221,7 +246,8 @@ assign(Client_PG.prototype, {
         if (returning === '*' || Array.isArray(returning)) {
           returns[i] = row;
         } else {
-          returns[i] = row[returning];
+          // Pluck the only column in the row.
+          returns[i] = row[Object.keys(row)[0]];
         }
       }
       return returns;

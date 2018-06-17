@@ -21,6 +21,7 @@ export default class Transaction extends EventEmitter {
     const txid = this.txid = uniqueId('trx')
 
     this.client    = client
+    this.logger    = client.logger;
     this.outerTx   = outerTx
     this.trxClient = undefined;
     this._debug    = client.config && client.config.debug
@@ -35,27 +36,27 @@ export default class Transaction extends EventEmitter {
       init.then(() => {
         return makeTransactor(this, connection, trxClient)
       })
-      .then((transactor) => {
+        .then((transactor) => {
         // If we've returned a "thenable" from the transaction container, assume
         // the rollback and commit are chained to this object's success / failure.
         // Directly thrown errors are treated as automatic rollbacks.
-        let result
-        try {
-          result = container(transactor)
-        } catch (err) {
-          result = Promise.reject(err)
-        }
-        if (result && result.then && typeof result.then === 'function') {
-          result.then((val) => {
-            return transactor.commit(val)
-          })
-          .catch((err) => {
-            return transactor.rollback(err)
-          })
-        }
-        return null;
-      })
-      .catch((e) => this._rejecter(e))
+          let result
+          try {
+            result = container(transactor)
+          } catch (err) {
+            result = Promise.reject(err)
+          }
+          if (result && result.then && typeof result.then === 'function') {
+            result.then((val) => {
+              return transactor.commit(val)
+            })
+              .catch((err) => {
+                return transactor.rollback(err)
+              })
+          }
+          return null;
+        })
+        .catch((e) => this._rejecter(e))
 
       return new Promise((resolver, rejecter) => {
         this._resolver = resolver
@@ -100,7 +101,7 @@ export default class Transaction extends EventEmitter {
     return this.query(conn, 'ROLLBACK;', 2, error)
       .timeout(5000)
       .catch(Promise.TimeoutError, () => {
-        this._resolver();
+        this._rejecter(error);
       });
   }
 
@@ -108,7 +109,7 @@ export default class Transaction extends EventEmitter {
     return this.query(conn, `ROLLBACK TO SAVEPOINT ${this.txid}`, 2, error)
       .timeout(5000)
       .catch(Promise.TimeoutError, () => {
-        this._resolver();
+        this._rejecter(error);
       });
   }
 
@@ -148,14 +149,19 @@ export default class Transaction extends EventEmitter {
   acquireConnection(client, config, txid) {
     const configConnection = config && config.connection
     return Promise.try(() => configConnection || client.acquireConnection())
-    .disposer(function(connection) {
-      if (!configConnection) {
-        debug('%s: releasing connection', txid)
-        client.releaseConnection(connection)
-      } else {
-        debug('%s: not releasing external connection', txid)
-      }
-    })
+      .then(function(connection) {
+        connection.__knexTxId = txid;
+
+        return connection;
+      })
+      .disposer(function(connection) {
+        if (!configConnection) {
+          debug('%s: releasing connection', txid)
+          client.releaseConnection(connection)
+        } else {
+          debug('%s: not releasing external connection', txid)
+        }
+      })
   }
 
 }
@@ -191,12 +197,13 @@ function makeTransactor(trx, connection, trxClient) {
 // connection and does not release back into the pool.
 function makeTxClient(trx, client, connection) {
 
-  const trxClient = Object.create(client.constructor.prototype)
+  const trxClient              = Object.create(client.constructor.prototype)
   trxClient.config             = client.config
   trxClient.driver             = client.driver
   trxClient.connectionSettings = client.connectionSettings
   trxClient.transacting        = true
   trxClient.valueForUndefined  = client.valueForUndefined
+  trxClient.logger             = client.logger;
 
   trxClient.on('query', function(arg) {
     trx.emit('query', arg)
@@ -243,7 +250,7 @@ function makeTxClient(trx, client, connection) {
 
 function completedError(trx, obj) {
   const sql = typeof obj === 'string' ? obj : obj && obj.sql
-  debug('%s: Transaction completed: %s', trx.id, sql)
+  debug('%s: Transaction completed: %s', trx.txid, sql)
   throw new Error('Transaction query already complete, run with DEBUG=knex:tx for more info')
 }
 

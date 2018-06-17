@@ -4,10 +4,9 @@
 import Promise from 'bluebird';
 
 import inherits from 'inherits';
-import { isUndefined, map, assign } from 'lodash'
+import { isUndefined, map, assign, defaults } from 'lodash'
 
 import Client from '../../client';
-import * as helpers from '../../helpers';
 
 import QueryCompiler from './query/compiler';
 import SchemaCompiler from './schema/compiler';
@@ -18,7 +17,7 @@ import SQLite3_DDL from './schema/ddl';
 function Client_SQLite3(config) {
   Client.call(this, config)
   if (isUndefined(config.useNullAsDefault)) {
-    helpers.warn(
+    this.logger.warn(
       'sqlite does not support inserting default values. Set the ' +
       '`useNullAsDefault` flag to hide this warning. ' +
       '(see docs http://knexjs.org/#Builder-insert).'
@@ -57,7 +56,7 @@ assign(Client_SQLite3.prototype, {
     return new SQLite3_DDL(this, compiler, pragma, connection)
   },
 
-  wrapIdentifier(value) {
+  wrapIdentifierImpl(value) {
     return (value !== '*' ? `\`${value.replace(/`/g, '``')}\`` : '*')
   },
 
@@ -76,11 +75,7 @@ assign(Client_SQLite3.prototype, {
   // Used to explicitly close a connection, called internally by the pool when
   // a connection times out or the pool is shutdown.
   destroyRawConnection(connection) {
-    connection.close((err) => {
-      if (err) {
-        this.emit('error', err)
-      }
-    })
+    return Promise.fromCallback(connection.close.bind(connection))
   },
 
   // Runs the query on the specified connection, providing the bindings and any
@@ -138,7 +133,6 @@ assign(Client_SQLite3.prototype, {
       case 'select':
       case 'pluck':
       case 'first':
-        response = helpers.skim(response)
         if (obj.method === 'pluck') response = map(response, obj.pluck)
         return obj.method === 'first' ? response[0] : response;
       case 'insert':
@@ -152,11 +146,8 @@ assign(Client_SQLite3.prototype, {
     }
   },
 
-  poolDefaults(config) {
-    return assign(Client.prototype.poolDefaults.call(this, config), {
-      min: 1,
-      max: 1
-    })
+  poolDefaults() {
+    return defaults({min: 1, max: 1}, Client.prototype.poolDefaults.call(this))
   }
 
 })

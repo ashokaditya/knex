@@ -5,7 +5,6 @@ import inherits from 'inherits';
 
 import Client from '../../client';
 import Promise from 'bluebird';
-import * as helpers from '../../helpers';
 
 import Transaction from './transaction';
 import QueryCompiler from './query/compiler';
@@ -56,7 +55,7 @@ assign(Client_MySQL.prototype, {
 
   _escapeBinding: makeEscape(),
 
-  wrapIdentifier(value) {
+  wrapIdentifierImpl(value) {
     return (value !== '*' ? `\`${value.replace(/`/g, '``')}\`` : '*')
   },
 
@@ -64,38 +63,48 @@ assign(Client_MySQL.prototype, {
   // connection needs to be added to the pool.
   acquireRawConnection() {
     return new Promise((resolver, rejecter) => {
-      const connection = this.driver.createConnection(this.connectionSettings)
+      const connection = this.driver.createConnection(this.connectionSettings);
+      connection.on('error', err => {
+        connection.__knex__disposed = err;
+      });
       connection.connect((err) => {
-        if (err) return rejecter(err)
-        connection.on('error', err => {
-          connection.__knex__disposed = err
-        })
-        resolver(connection)
-      })
+        if (err) {
+          // if connection is rejected, remove listener that was registered above...
+          connection.removeAllListeners();
+          return rejecter(err);
+        }
+        resolver(connection);
+      });
     })
   },
 
   // Used to explicitly close a connection, called internally by the pool
   // when a connection times out or the pool is shutdown.
   destroyRawConnection(connection) {
-    connection.removeAllListeners()
-    connection.end(err => {
-      if (err) connection.__knex__disposed = err
-    })
+    return Promise
+      .fromCallback(connection.end.bind(connection))
+      .catch(err => {
+        connection.__knex__disposed = err
+      })
+      .finally(() => connection.removeAllListeners());
   },
 
   validateConnection(connection) {
-    return connection.state === 'connected' || connection.state === 'authenticated'
+    if (connection.state === 'connected' || connection.state === 'authenticated') {
+      return true
+    }
+    return false
   },
 
   // Grab a connection, run the query via the MySQL streaming interface,
   // and pass that through to the stream we've sent back to the client.
   _stream(connection, obj, stream, options) {
     options = options || {}
+    const queryOptions = assign({sql: obj.sql}, obj.options)
     return new Promise((resolver, rejecter) => {
       stream.on('error', rejecter)
       stream.on('end', resolver)
-      connection.query(obj.sql, obj.bindings).stream(options).pipe(stream)
+      connection.query(queryOptions, obj.bindings).stream(options).pipe(stream)
     })
   },
 
@@ -104,10 +113,12 @@ assign(Client_MySQL.prototype, {
   _query(connection, obj) {
     if (!obj || typeof obj === 'string') obj = {sql: obj}
     return new Promise(function(resolver, rejecter) {
-      let { sql } = obj
-      if (!sql) return resolver()
-      if (obj.options) sql = assign({sql}, obj.options)
-      connection.query(sql, obj.bindings, function(err, rows, fields) {
+      if (!obj.sql) {
+        resolver()
+        return
+      }
+      const queryOptions = assign({sql: obj.sql}, obj.options)
+      connection.query(queryOptions, obj.bindings, function(err, rows, fields) {
         if (err) return rejecter(err)
         obj.response = [rows, fields]
         resolver(obj)
@@ -127,9 +138,8 @@ assign(Client_MySQL.prototype, {
       case 'select':
       case 'pluck':
       case 'first': {
-        const resp = helpers.skim(rows)
-        if (method === 'pluck') return map(resp, obj.pluck)
-        return method === 'first' ? resp[0] : resp
+        if (method === 'pluck') return map(rows, obj.pluck)
+        return method === 'first' ? rows[0] : rows
       }
       case 'insert':
         return [rows.insertId]

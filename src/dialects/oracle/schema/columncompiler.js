@@ -21,7 +21,10 @@ assign(ColumnCompiler_Oracle.prototype, {
     // TODO Add warning that sequence etc is created
     this.pushAdditional(function () {
       const tableName = this.tableCompiler.tableNameRaw;
-      const createTriggerSQL = Trigger.createAutoIncrementTrigger(tableName);
+      const createTriggerSQL = Trigger.createAutoIncrementTrigger(
+        this.client.logger,
+        tableName
+      );
       this.pushQuery(createTriggerSQL);
     });
   },
@@ -46,6 +49,11 @@ assign(ColumnCompiler_Oracle.prototype, {
     return `number(${this._num(precision, 8)}, ${this._num(scale, 2)})`;
   },
 
+  decimal(precision, scale) {
+    if (precision === null) return 'decimal';
+    return `decimal(${this._num(precision, 8)}, ${this._num(scale, 2)})`;
+  },
+
   integer(length) {
     return length ? `number(${this._num(length, 11)})` : 'integer';
   },
@@ -64,7 +72,7 @@ assign(ColumnCompiler_Oracle.prototype, {
     allowed = uniq(allowed);
     const maxLength = (allowed || []).reduce((maxLength, name) =>
       Math.max(maxLength, String(name).length)
-    , 1);
+      , 1);
 
     // implicitly add the enum values as checked values
     this.columnBuilder._modifiers.checkIn = [allowed];
@@ -100,9 +108,11 @@ assign(ColumnCompiler_Oracle.prototype, {
   // ------
 
   comment(comment) {
+    const columnName = this.args[0] || this.defaults('columnName');
+
     this.pushAdditional(function() {
       this.pushQuery(`comment on column ${this.tableCompiler.tableName()}.` +
-        this.formatter.wrap(this.args[0]) + " is '" + (comment || '')+ "'");
+        this.formatter.wrap(columnName) + " is '" + (comment || '')+ "'");
     }, comment);
   },
 

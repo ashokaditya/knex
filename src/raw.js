@@ -8,14 +8,14 @@ import debug from 'debug'
 
 import { assign, reduce, isPlainObject, isObject, isUndefined, isNumber } from 'lodash'
 import Formatter from './formatter'
-
+import saveAsyncStack from './util/save-async-stack';
 import uuid from 'uuid';
 
 const debugBindings = debug('knex:bindings')
 
 const fakeClient = {
-  formatter() {
-    return new Formatter(fakeClient)
+  formatter(builder) {
+    return new Formatter(fakeClient, builder)
   }
 }
 
@@ -28,7 +28,10 @@ function Raw(client = fakeClient) {
   // Todo: Deprecate
   this._wrappedBefore = undefined
   this._wrappedAfter = undefined
-  this._debug = client && client.config && client.config.debug
+  if (client && client.config) {
+    this._debug = client.config.debug
+    saveAsyncStack(this, 4)
+  }
 }
 inherits(Raw, EventEmitter)
 
@@ -70,7 +73,7 @@ assign(Raw.prototype, {
   // Returns the raw sql for the query.
   toSQL(method, tz) {
     let obj
-    const formatter = this.client.formatter()
+    const formatter = this.client.formatter(this)
 
     if (Array.isArray(this.bindings)) {
       obj = replaceRawArrBindings(this, formatter)
@@ -147,7 +150,6 @@ function replaceRawArrBindings(raw, formatter) {
 
 function replaceKeyBindings(raw, formatter) {
   const values = raw.bindings
-
   let { sql } = raw
 
   const regex = /\\?(:(\w+):(?=::)|:(\w+):(?!:)|:(\w+))/g
@@ -186,5 +188,6 @@ function replaceKeyBindings(raw, formatter) {
 // Allow the `Raw` object to be utilized with full access to the relevant
 // promise API.
 require('./interface')(Raw)
+helpers.addQueryContext(Raw);
 
 export default Raw

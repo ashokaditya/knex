@@ -4,7 +4,6 @@
 import inherits from 'inherits';
 import Client_MySQL from '../mysql';
 import Promise from 'bluebird';
-import * as helpers from '../../helpers';
 import Transaction from './transaction';
 
 import { assign, map } from 'lodash'
@@ -36,22 +35,33 @@ assign(Client_MariaSQL.prototype, {
       connection.connect(assign({metadata: true}, this.connectionSettings))
       connection
         .on('ready', function() {
-          connection.removeAllListeners('error');
           resolver(connection);
         })
-        .on('error', rejecter);
+        .on('error', err => {
+          connection.__knex__disposed = err
+          rejecter(err)
+        });
     })
   },
 
   validateConnection(connection) {
-    return connection.connected === true
+    if (connection.connected === true) {
+      return true
+    }
+
+    return false
   },
 
   // Used to explicitly close a connection, called internally by the pool
   // when a connection times out or the pool is shutdown.
   destroyRawConnection(connection) {
     connection.removeAllListeners()
+    let closed = Promise.resolve()
+    if (connection.connected || connection.connecting) {
+      closed = new Promise(resolve => { connection.once('close', resolve)})
+    }
     connection.end()
+    return closed
   },
 
   // Return the database for the MariaSQL client.
@@ -107,9 +117,8 @@ assign(Client_MariaSQL.prototype, {
       case 'select':
       case 'pluck':
       case 'first': {
-        const resp = helpers.skim(rows);
-        if (method === 'pluck') return map(resp, obj.pluck);
-        return method === 'first' ? resp[0] : resp;
+        if (method === 'pluck') return map(rows, obj.pluck);
+        return method === 'first' ? rows[0] : rows;
       }
       case 'insert':
         return [data.insertId];
@@ -131,6 +140,8 @@ function parseType(value, type) {
       return new Date(value);
     case 'INTEGER':
       return parseInt(value, 10);
+    case 'FLOAT':
+      return parseFloat(value);
     default:
       return value;
   }

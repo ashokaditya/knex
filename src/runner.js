@@ -1,6 +1,5 @@
-import { assign, isArray, noop } from 'lodash'
+import { assign, isArray } from 'lodash'
 import Promise from 'bluebird';
-import * as helpers from './helpers';
 
 let PassThrough;
 
@@ -32,7 +31,7 @@ assign(Runner.prototype, {
       const sql = runner.builder.toSQL();
 
       if (runner.builder._debug) {
-        helpers.debugLog(sql)
+        runner.client.logger.debug(sql);
       }
 
       if (isArray(sql)) {
@@ -45,18 +44,18 @@ assign(Runner.prototype, {
     // If there are any "error" listeners, we fire an error event
     // and then re-throw the error to be eventually handled by
     // the promise chain. Useful if you're wrapping in a custom `Promise`.
-    .catch(function(err) {
-      if (runner.builder._events && runner.builder._events.error) {
-        runner.builder.emit('error', err);
-      }
-      throw err;
-    })
+      .catch(function(err) {
+        if (runner.builder._events && runner.builder._events.error) {
+          runner.builder.emit('error', err);
+        }
+        throw err;
+      })
 
     // Fire a single "end" event on the builder when
     // all queries have successfully completed.
-    .tap(function() {
-      runner.builder.emit('end');
-    })
+      .tap(function() {
+        runner.builder.emit('end');
+      })
 
   },
 
@@ -76,11 +75,14 @@ assign(Runner.prototype, {
     const hasHandler = typeof handler === 'function';
 
     // Lazy-load the "PassThrough" dependency.
-    PassThrough = PassThrough || require('readable-stream').PassThrough;
+    PassThrough = PassThrough || require('stream').PassThrough;
 
     const runner = this;
     const stream = new PassThrough({objectMode: true});
+
+    let hasConnection = false;
     const promise = Promise.using(this.ensureConnection(), function(connection) {
+      hasConnection = true;
       runner.connection = connection;
       const sql = runner.builder.toSQL()
       const err = new Error('The stream may only be used with a single query statement.');
@@ -99,9 +101,13 @@ assign(Runner.prototype, {
       return promise;
     }
 
-    // This promise is unreachable since no handler was given, so noop any
-    // exceptions. Errors should be handled in the stream's 'error' event.
-    promise.catch(noop);
+    // Emit errors on the stream if the error occurred before a connection
+    // could be acquired.
+    // If the connection was acquired, assume the error occured in the client
+    // code and has already been emitted on the stream. Don't emit it twice.
+    promise.catch(function(err) {
+      if (!hasConnection) stream.emit('error', err);
+    });
     return stream;
   },
 
@@ -114,7 +120,10 @@ assign(Runner.prototype, {
   // to run in sequence, and on the same connection, especially helpful when schema building
   // and dealing with foreign key constraints, etc.
   query: Promise.method(function(obj) {
-    this.builder.emit('query', assign({__knexUid: this.connection.__knexUid}, obj))
+    const {__knexUid, __knexTxId} = this.connection;
+
+    this.builder.emit('query', assign({__knexUid, __knexTxId}, obj))
+
     const runner = this
     let queryPromise = this.client.query(this.connection, obj)
 
@@ -125,19 +134,25 @@ assign(Runner.prototype, {
     return queryPromise
       .then((resp) => {
         const processedResponse = this.client.processResponse(resp, runner);
+        const queryContext = this.builder.queryContext();
+        const postProcessedResponse = this.client
+          .postProcessResponse(processedResponse, queryContext);
+
         this.builder.emit(
           'query-response',
-          processedResponse,
+          postProcessedResponse,
           assign({__knexUid: this.connection.__knexUid}, obj),
           this.builder
         );
+
         this.client.emit(
           'query-response',
-          processedResponse,
+          postProcessedResponse,
           assign({__knexUid: this.connection.__knexUid}, obj),
           this.builder
         );
-        return processedResponse;
+
+        return postProcessedResponse;
       }).catch(Promise.TimeoutError, error => {
         const { timeout, sql, bindings } = obj;
 
@@ -145,11 +160,22 @@ assign(Runner.prototype, {
         if (obj.cancelOnTimeout) {
           cancelQuery = this.client.cancelQuery(this.connection);
         } else {
+          // If we don't cancel the query, we need to mark the connection as disposed so that
+          // it gets destroyed by the pool and is never used again. If we don't do this and
+          // return the connection to the pool, it will be useless until the current operation
+          // that timed out, finally finishes.
+          this.connection.__knex__disposed = error
           cancelQuery = Promise.resolve();
         }
 
         return cancelQuery
           .catch((cancelError) => {
+            // If the cancellation failed, we need to mark the connection as disposed so that
+            // it gets destroyed by the pool and is never used again. If we don't do this and
+            // return the connection to the pool, it will be useless until the current operation
+            // that timed out, finally finishes.
+            this.connection.__knex__disposed = error
+
             // cancellation failed
             throw assign(cancelError, {
               message: `After query timeout of ${timeout}ms exceeded, cancelling of query failed.`,
@@ -185,24 +211,21 @@ assign(Runner.prototype, {
 
   // Check whether there's a transaction flag, and that it has a connection.
   ensureConnection() {
-    return Promise.try(() => {
-      return this.connection || new Promise((resolver, rejecter) => {
-        // need to return promise or null from handler to prevent warning from bluebird
-        return this.client.acquireConnection()
-          .then(resolver)
-          .catch(Promise.TimeoutError, (error) => {
-            if (this.builder) {
-              error.sql = this.builder.sql;
-              error.bindings = this.builder.bindings;
-            }
-            throw error
-          })
-          .catch(rejecter)
+    if(this.connection) {
+      return Promise.resolve(this.connection)
+    }
+    return this.client.acquireConnection()
+      .catch(Promise.TimeoutError, error => {
+        if (this.builder) {
+          error.sql = this.builder.sql;
+          error.bindings = this.builder.bindings;
+        }
+        throw error;
       })
-    }).disposer(() => {
-      // need to return promise or null from handler to prevent warning from bluebird
-      return this.client.releaseConnection(this.connection)
-    })
+      .disposer(() => {
+        // need to return promise or null from handler to prevent warning from bluebird
+        return this.client.releaseConnection(this.connection)
+      });
   }
 
 })

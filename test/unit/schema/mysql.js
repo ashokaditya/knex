@@ -2,6 +2,7 @@
 
 'use strict';
 
+var sinon = require('sinon');
 var MySQL_Client  = require('../../../lib/dialects/mysql');
 var Maria_Client  = require('../../../lib/dialects/maria');
 var MySQL2_Client = require('../../../lib/dialects/mysql2');
@@ -52,6 +53,15 @@ describe(dialect + " SchemaBuilder", function() {
     equal(1, tableSql.length);
     expect(tableSql[0].sql).to.equal('alter table `users` add `id` int unsigned not null auto_increment primary key, add `email` varchar(255)');
   });
+
+  if(dialect !== 'maria') {
+    it('adding json', function() {
+	  tableSql = client.schemaBuilder().table('user', function(t) {
+	  t.json('preferences');
+	  }).toSQL();
+	  expect(tableSql[0].sql).to.equal('alter table `user` add `preferences` json');
+    });
+  }
 
   it('test drop table', function() {
     tableSql = client.schemaBuilder().dropTable('users').toSQL();
@@ -423,6 +433,14 @@ describe(dialect + " SchemaBuilder", function() {
     expect(tableSql[0].sql).to.equal('alter table `users` add `foo` decimal(5, 2)');
   });
 
+  it('test adding decimal, no precision', function() {
+    expect(() => {
+      tableSql = client.schemaBuilder().table('users', function() {
+        this.decimal('foo', null);
+      }).toSQL();
+    }).to.throw('Specifying no precision on decimal columns is not supported');
+  });
+
   it('test adding boolean', function() {
     tableSql = client.schemaBuilder().table('users', function() {
       this.boolean('foo');
@@ -486,6 +504,28 @@ describe(dialect + " SchemaBuilder", function() {
     expect(tableSql[0].sql).to.equal('alter table `users` add `created_at` datetime, add `updated_at` datetime');
   });
 
+  it('test adding precise time stamp', function() {
+    client.version = '5.6'
+    tableSql = client.schemaBuilder().table('users', function() {
+      this.timestamp('foo');
+    }).toSQL();
+    delete client.version
+
+    equal(1, tableSql.length);
+    expect(tableSql[0].sql).to.equal('alter table `users` add `foo` timestamp(6)');
+  });
+
+  it('test adding precise time stamps', function() {
+    client.version = '5.6'
+    tableSql = client.schemaBuilder().table('users', function() {
+      this.timestamps();
+    }).toSQL();
+    delete client.version
+
+    equal(1, tableSql.length);
+    expect(tableSql[0].sql).to.equal('alter table `users` add `created_at` datetime(6), add `updated_at` datetime(6)');
+  });
+
   it('test adding binary', function() {
     tableSql = client.schemaBuilder().table('users', function() {
       this.binary('foo');
@@ -520,6 +560,24 @@ describe(dialect + " SchemaBuilder", function() {
 
     equal(1, tableSql.length);
     expect(tableSql[0].sql).to.equal('alter table `users` comment = \'\'');
+  });
+
+  it('set comment to undefined', function() {
+    expect(function() {
+      client.schemaBuilder().table('user', function(t) {
+        t.comment();
+      }).toSQL();
+    })
+    .to.throw(TypeError);
+  });
+
+  it('set comment to null', function() {
+    expect(function() {
+      client.schemaBuilder().table('user', function(t) {
+        t.comment(null);
+      }).toSQL();
+    })
+    .to.throw(TypeError);
   });
 
   it('should alter columns with the alter flag', function() {
@@ -579,6 +637,93 @@ describe(dialect + " SchemaBuilder", function() {
     }).toSQL();
 
     expect(tableSql[1].sql).to.equal('alter table `users` add primary key `testconstraintname`(`test`)');
+  });
+
+  describe('queryContext', function () {
+    let spy;
+    let originalWrapIdentifier;
+
+    before(function () {
+      spy = sinon.spy();
+      originalWrapIdentifier = client.config.wrapIdentifier;
+      client.config.wrapIdentifier = function (value, wrap, queryContext) {
+        spy(value, queryContext);
+        return wrap(value);
+      };
+    });
+
+    beforeEach(function () {
+      spy.reset();
+    });
+
+    after(function () {
+      client.config.wrapIdentifier = originalWrapIdentifier;
+    });
+
+    it('SchemaCompiler passes queryContext to wrapIdentifier via TableCompiler', function () {
+      client
+        .schemaBuilder()
+        .queryContext('schema context')
+        .createTable('users', function (table) {
+          table.increments('id');
+          table.string('email');
+        })
+        .toSQL();
+
+      expect(spy.callCount).to.equal(3);
+      expect(spy.firstCall.args).to.deep.equal(['id', 'schema context']);
+      expect(spy.secondCall.args).to.deep.equal(['email', 'schema context']);
+      expect(spy.thirdCall.args).to.deep.equal(['users', 'schema context']);
+    });
+
+    it('TableCompiler passes queryContext to wrapIdentifier', function () {
+      client
+        .schemaBuilder()
+        .createTable('users', function (table) {
+          table.increments('id').queryContext('id context');
+          table.string('email').queryContext('email context');
+        })
+        .toSQL();
+
+      expect(spy.callCount).to.equal(3);
+      expect(spy.firstCall.args).to.deep.equal(['id', 'id context']);
+      expect(spy.secondCall.args).to.deep.equal(['email', 'email context']);
+      expect(spy.thirdCall.args).to.deep.equal(['users', undefined]);
+    });
+
+    it('TableCompiler allows overwriting queryContext from SchemaCompiler', function () {
+      client
+        .schemaBuilder()
+        .queryContext('schema context')
+        .createTable('users', function (table) {
+          table.queryContext('table context');
+          table.increments('id');
+          table.string('email');
+        })
+        .toSQL();
+
+      expect(spy.callCount).to.equal(3);
+      expect(spy.firstCall.args).to.deep.equal(['id', 'table context']);
+      expect(spy.secondCall.args).to.deep.equal(['email', 'table context']);
+      expect(spy.thirdCall.args).to.deep.equal(['users', 'table context']);
+    });
+
+    it('ColumnCompiler allows overwriting queryContext from TableCompiler', function () {
+      client
+        .schemaBuilder()
+        .queryContext('schema context')
+        .createTable('users', function (table) {
+          table.queryContext('table context');
+          table.increments('id').queryContext('id context');
+          table.string('email').queryContext('email context');
+        })
+        .toSQL();
+
+      expect(spy.callCount).to.equal(3);
+      expect(spy.firstCall.args).to.deep.equal(['id', 'id context']);
+      expect(spy.secondCall.args).to.deep.equal(['email', 'email context']);
+      expect(spy.thirdCall.args).to.deep.equal(['users', 'table context']);
+    });
   });
 
 });

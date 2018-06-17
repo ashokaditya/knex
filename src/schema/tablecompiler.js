@@ -2,18 +2,19 @@
 
 // Table Compiler
 // -------
-import { pushAdditional, pushQuery } from './helpers';
+import { pushAdditional, pushQuery, unshiftQuery } from './helpers';
 import * as helpers from '../helpers';
-import { groupBy, reduce, map, first, tail, isEmpty, indexOf, isArray } from 'lodash'
+import { groupBy, reduce, map, first, tail, isEmpty, indexOf, isArray, isUndefined } from 'lodash'
 
 function TableCompiler(client, tableBuilder) {
   this.client = client
+  this.tableBuilder = tableBuilder;
   this.method = tableBuilder._method;
   this.schemaNameRaw = tableBuilder._schemaName;
   this.tableNameRaw = tableBuilder._tableName;
   this.single = tableBuilder._single;
   this.grouped = groupBy(tableBuilder._statements, 'grouping');
-  this.formatter = client.formatter();
+  this.formatter = client.formatter(tableBuilder);
   this.sequence = [];
   this._formatting = client.config && client.config.formatting
 }
@@ -21,6 +22,8 @@ function TableCompiler(client, tableBuilder) {
 TableCompiler.prototype.pushQuery = pushQuery
 
 TableCompiler.prototype.pushAdditional = pushAdditional
+
+TableCompiler.prototype.unshiftQuery = unshiftQuery
 
 // Convert the tableCompiler toSQL
 TableCompiler.prototype.toSQL = function () {
@@ -143,9 +146,17 @@ TableCompiler.prototype.getColumns = function (method) {
   const columns = this.grouped.columns || [];
   method        = method || 'add';
 
+  const queryContext = this.tableBuilder.queryContext();
+
   return columns
     .filter(column => column.builder._method === method)
-    .map(column => this.client.columnCompiler(this, column.builder));
+    .map(column => {
+      // pass queryContext down to columnBuilder but do not overwrite it if already set
+      if (!isUndefined(queryContext) && isUndefined(column.builder.queryContext())) {
+        column.builder.queryContext(queryContext);
+      }
+      return this.client.columnCompiler(this, column.builder);
+    });
 };
 
 TableCompiler.prototype.tableName = function () {
@@ -164,7 +175,7 @@ TableCompiler.prototype.alterTable = function () {
     if (this[statement.method]) {
       this[statement.method].apply(this, statement.args);
     } else {
-      helpers.error(`Debug: ${statement.method} does not exist`);
+      this.client.logger.error(`Debug: ${statement.method} does not exist`);
     }
   }
   for (const item in this.single) {
@@ -188,7 +199,7 @@ TableCompiler.prototype.alterTableForCreate = function (columnTypes) {
       this[statement.method].apply(this, statement.args);
       columnTypes.sql.push(this.sequence[0].sql);
     } else {
-      helpers.error(`Debug: ${statement.method} does not exist`);
+      this.client.logger.error(`Debug: ${statement.method} does not exist`);
     }
   }
   this.sequence = savedSequence;

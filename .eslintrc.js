@@ -14,7 +14,7 @@ module.exports = {
     "no-console": warning,
     "no-var": 2,
     "no-debugger": warning,
-    "indent": [warning, 2, {"SwitchCase": 1}],
+    "indent": [warning, 2, {"SwitchCase": 1, "ignoreComments": true}],
     "max-len": [warning, 100, 2],
     "prefer-const": warning,
     "no-fallthrough": warning
@@ -23,6 +23,7 @@ module.exports = {
     "import/parser": "babel-eslint"
   },
   "env": {
-    "node": true
+    "node": true,
+    "mocha": true
   }
 };

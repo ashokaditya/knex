@@ -6,7 +6,6 @@ import { assign, map, flatten, values } from 'lodash'
 import inherits from 'inherits';
 import Client from '../../client';
 import Promise from 'bluebird';
-import * as helpers from '../../helpers';
 import {bufferToString} from '../../query/string';
 import Formatter from './formatter';
 
@@ -41,7 +40,7 @@ assign(Client_Oracle.prototype, {
   },
 
   formatter() {
-    return new Formatter(this)
+    return new Formatter(this, ...arguments)
   },
 
   queryCompiler() {
@@ -98,7 +97,7 @@ assign(Client_Oracle.prototype, {
   // Used to explicitly close a connection, called internally by the pool
   // when a connection times out or the pool is shutdown.
   destroyRawConnection(connection) {
-    connection.close()
+    return Promise.fromCallback(connection.close.bind(connection))
   },
 
   // Return the database for the Oracle client.
@@ -116,7 +115,6 @@ assign(Client_Oracle.prototype, {
   },
 
   _stream(connection, obj, stream, options) {
-    obj.sql = this.positionBindings(obj.sql);
     return new Promise(function (resolver, rejecter) {
       stream.on('error', (err) => {
         if (isConnectionError(err)) {
@@ -133,9 +131,6 @@ assign(Client_Oracle.prototype, {
   // Runs the query on the specified connection, providing the bindings
   // and any other necessary prep work.
   _query(connection, obj) {
-
-    // convert ? params into positional bindings (:1)
-    obj.sql = this.positionBindings(obj.sql);
 
     if (!obj.sql) throw new Error('The query is empty');
 
@@ -165,7 +160,6 @@ assign(Client_Oracle.prototype, {
       case 'select':
       case 'pluck':
       case 'first':
-        response = helpers.skim(response);
         if (obj.method === 'pluck') response = map(response, obj.pluck);
         return obj.method === 'first' ? response[0] : response;
       case 'insert':

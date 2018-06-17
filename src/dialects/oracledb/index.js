@@ -9,18 +9,16 @@ const BlobHelper = require('./utils').BlobHelper;
 const ReturningHelper = require('./utils').ReturningHelper;
 const Promise = require('bluebird');
 const stream = require('stream');
-const helpers = require('../../helpers');
 const Transaction = require('./transaction');
 const Client_Oracle = require('../oracle');
 const Oracle_Formatter = require('../oracle/formatter');
-const Buffer = require('safe-buffer').Buffer;
 
 function Client_Oracledb() {
   Client_Oracle.apply(this, arguments);
   // Node.js only have 4 background threads by default, oracledb needs one by connection
   if (this.driver) {
     process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || 1;
-    process.env.UV_THREADPOOL_SIZE += this.driver.poolMax;
+    process.env.UV_THREADPOOL_SIZE = parseInt(process.env.UV_THREADPOOL_SIZE) + this.driver.poolMax;
   }
 }
 inherits(Client_Oracledb, Client_Oracle);
@@ -37,7 +35,9 @@ Client_Oracledb.prototype._driver = function() {
       type = type.toUpperCase();
       if (oracledb[type]) {
         if (type !== 'NUMBER' && type !== 'DATE' && type !== 'CLOB') {
-          helpers.warn('Only "date", "number" and "clob" are supported for fetchAsString');
+          this.logger.warn(
+            'Only "date", "number" and "clob" are supported for fetchAsString'
+          );
         }
         client.fetchAsString.push(oracledb[type]);
       }
@@ -53,7 +53,7 @@ Client_Oracledb.prototype.columnCompiler = function() {
   return new ColumnCompiler(this, ...arguments)
 }
 Client_Oracledb.prototype.formatter = function() {
-  return new Oracledb_Formatter(this)
+  return new Oracledb_Formatter(this, ...arguments)
 }
 Client_Oracledb.prototype.transaction = function() {
   return new Transaction(this, ...arguments)
@@ -227,16 +227,12 @@ Client_Oracledb.prototype.acquireRawConnection = function() {
 // Used to explicitly close a connection, called internally by the pool
 // when a connection times out or the pool is shutdown.
 Client_Oracledb.prototype.destroyRawConnection = function(connection) {
-  connection.release()
+  return connection.release()
 };
 
 // Runs the query on the specified connection, providing the bindings
 // and any other necessary prep work.
 Client_Oracledb.prototype._query = function(connection, obj) {
-  // Convert ? params into positional bindings (:1)
-  obj.sql = this.positionBindings(obj.sql);
-  obj.bindings = this.prepBindings(obj.bindings) || [];
-
   return new Promise(function(resolver, rejecter) {
     if (!obj.sql) {
       return rejecter(new Error('The query is empty'));
@@ -358,7 +354,6 @@ Client_Oracledb.prototype.processResponse = function(obj, runner) {
     case 'select':
     case 'pluck':
     case 'first':
-      response = helpers.skim(response);
       if (obj.method === 'pluck') {
         response = _.map(response, obj.pluck);
       }

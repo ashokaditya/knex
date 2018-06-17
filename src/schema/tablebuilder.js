@@ -72,10 +72,10 @@ each(specialMethods, function(methods, dialect) {
   each(methods, function(method) {
     TableBuilder.prototype[method] = function(value) {
       if (this.client.dialect !== dialect) {
-        helpers.warn(`Knex only supports ${method} statement with ${dialect}.`);
+        this.client.logger.warn(`Knex only supports ${method} statement with ${dialect}.`);
       }
       if (this._method === 'alter') {
-        helpers.warn(
+        this.client.logger.warn(
           `Knex does not support altering the ${method} outside of create ` +
           `table, please use knex.raw statement.`
         );
@@ -84,6 +84,8 @@ each(specialMethods, function(methods, dialect) {
     };
   });
 });
+
+helpers.addQueryContext(TableBuilder);
 
 // Each of the column types that we can add, we create a new ColumnBuilder
 // instance and push it onto the statements array.
@@ -180,6 +182,9 @@ TableBuilder.prototype.timestamps = function timestamps() {
 // Set the comment value for a table, they're only allowed to be called
 // once per table.
 TableBuilder.prototype.comment = function(value) {
+  if (typeof value !== 'string') {
+    throw new TypeError('Table comment must be string');
+  }
   this._single.comment = value;
 };
 
