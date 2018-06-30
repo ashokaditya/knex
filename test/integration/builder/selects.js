@@ -1,10 +1,10 @@
 /*global describe, expect, it, testPromise, d*/
 'use strict';
 
-var _ = require('lodash')
-var assert  = require('assert')
-var Promise = testPromise;
-var Runner = require('../../../lib/runner');
+const _ = require('lodash')
+const assert  = require('assert')
+const Promise = testPromise;
+const Runner = require('../../../lib/runner');
 
 module.exports = function(knex) {
 
@@ -26,7 +26,7 @@ module.exports = function(knex) {
             [1, 2, 3, 4, 5, 7]
           );
           tester(
-            'postgresql',
+            'pg',
             'select "id" from "accounts" order by "id" asc',
             [],
             ['1', '2', '3', '4', '5', '7']
@@ -68,7 +68,7 @@ module.exports = function(knex) {
             [1, 2, 3, 4, 5, 7]
           );
           tester(
-            'postgresql',
+            'pg',
             'select "accounts"."id" from "accounts" order by "accounts"."id" asc',
             [],
             ['1', '2', '3', '4', '5', '7']
@@ -110,7 +110,7 @@ module.exports = function(knex) {
             [3, 4, 5, 7]
           );
           tester(
-            'postgresql',
+            'pg',
             'select "id" from "accounts" order by "id" asc offset ?',
             [2],
             ['3', '4', '5', '7']
@@ -152,7 +152,7 @@ module.exports = function(knex) {
             { id: 1, first_name: 'Test' }
           );
           tester(
-            'postgresql',
+            'pg',
             'select "id", "first_name" from "accounts" order by "id" asc limit ?',
             [1],
             { id: '1', first_name: 'Test' }
@@ -212,7 +212,7 @@ module.exports = function(knex) {
       return knex('accounts')
         .options({
           typeCast (field, next) {
-            var val
+            let val
             if (field.type === 'VAR_STRING') {
               val = field.string()
               return val == null ? val : val.toUpperCase()
@@ -235,22 +235,22 @@ module.exports = function(knex) {
     })
 
     it('emits error on the stream, if not passed a function, and connecting fails', function() {
-      var expected = new Error();
-      var original = Runner.prototype.ensureConnection;
+      const expected = new Error();
+      const original = Runner.prototype.ensureConnection;
       Runner.prototype.ensureConnection = function() {
         return Promise.reject(expected);
       };
 
-      var restore = () => {
+      const restore = () => {
         Runner.prototype.ensureConnection = original;
       };
 
-      var promise = new Promise((resolve, reject) => {
-        var timeout = setTimeout(() => {
+      const promise = new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
           reject(new Error('Timeout'));
         }, 5000);
 
-        var stream = knex('accounts').stream();
+        const stream = knex('accounts').stream();
         stream.on('error', function(actual) {
           clearTimeout(timeout);
 
@@ -265,6 +265,22 @@ module.exports = function(knex) {
       promise.then(restore, restore);
       return promise;
     });
+
+    it('emits error on the stream, if not passed a function, and query fails', function(done) {
+      const stream = knex('accounts').select('invalid_field').stream()
+      stream.on('error', function(err) {
+        assert(err instanceof Error)
+        done()
+      })
+    })
+
+    it('emits error if not passed a function and the query has wrong bindings', function(done) {
+      const stream = knex('accounts').whereRaw('id = ? and first_name = ?', ['2']).stream()
+      stream.on('error', function(err) {
+        assert(err instanceof Error)
+        done()
+      })
+    })
 
     it('properly escapes postgres queries on streaming', function() {
       let count = 0;
@@ -334,7 +350,7 @@ module.exports = function(knex) {
               }]
             );
             tester(
-              'postgresql',
+              'pg',
               'select "first_name", "last_name" from "accounts" where "id" = ?',
               [1],
               [{
@@ -397,7 +413,7 @@ module.exports = function(knex) {
               }]
             );
             tester(
-              'postgresql',
+              'pg',
               'select "first_name", "last_name" from "accounts" where "id" = ?',
               [1],
               [{
@@ -456,7 +472,7 @@ module.exports = function(knex) {
               [1]
             );
             tester(
-              'postgresql',
+              'pg',
               'select "email", "logins" from "accounts" where "id" > ?',
               [1]
             );
@@ -507,7 +523,7 @@ module.exports = function(knex) {
               }]
             );
             tester(
-              'postgresql',
+              'pg',
               'select * from "accounts" where "id" = ?',
               [1],
               [{
@@ -607,7 +623,7 @@ module.exports = function(knex) {
               []
             );
             tester(
-              'postgresql',
+              'pg',
               'select "first_name", "email" from "accounts" where "id" is null',
               [],
               []
@@ -653,7 +669,7 @@ module.exports = function(knex) {
               []
             );
             tester(
-              'postgresql',
+              'pg',
               'select * from "accounts" where "id" = ?',
               [0],
               []
@@ -745,8 +761,8 @@ module.exports = function(knex) {
                 details: 'One, Two, Zero',
                 status: 0
               }]);
-            tester('postgresql',
-              'select * from "composite_key_test" where ("column_a", "column_b") in ((?, ?),(?, ?)) order by "status" desc',
+            tester('pg',
+              'select * from "composite_key_test" where ("column_a", "column_b") in ((?, ?), (?, ?)) order by "status" desc',
               [1,1,1,2],
               [{
                 column_a: 1,
@@ -810,8 +826,8 @@ module.exports = function(knex) {
                 details: 'One, One, One',
                 status: 1
               }]);
-            tester('postgresql',
-              'select * from "composite_key_test" where "status" = ? and ("column_a", "column_b") in ((?, ?),(?, ?))',
+            tester('pg',
+              'select * from "composite_key_test" where "status" = ? and ("column_a", "column_b") in ((?, ?), (?, ?))',
               [1,1,1,1,2],
               [{
                 column_a: 1,
@@ -940,6 +956,55 @@ module.exports = function(knex) {
         })
     });
 
-  });
+    it('select for update locks selected row', function() {
+      if (knex.client.dialect === 'sqlite3') { 
+        return;
+      }
 
+      return knex('test_default_table').insert({ string: 'making sure there is a row to lock'})
+        .then(() => {
+          return knex.transaction(trx => {
+            // select all from test table and lock
+            return trx('test_default_table').forUpdate().then((res) => {
+              // try to select stuff from table in other connection should just hang...
+              return knex('test_default_table').forUpdate().timeout(100);
+            });
+          }).then(res => {
+            expect("Second query should have timed out").to.be.false;
+          }).catch(err => {
+            expect(err.message).to.be.contain('Defined query timeout of 100ms exceeded when running query');
+          });
+        });  
+    });  
+
+    it('select for share prevents updating in other transaction', function() {
+      if (knex.client.dialect === 'sqlite3' || knex.client.dialect === 'oracle') {
+        return;
+      }
+
+      return knex('test_default_table').insert({ string: 'making sure there is a row to lock'})
+        .then(() => {
+          return knex.transaction(trx => {
+            // select all from test table and lock
+            return trx('test_default_table').forShare().then((res) => {
+              // try to update row that was selected for share should just hang...
+              return knex.transaction(trx2 => {
+                return trx2('test_default_table').update({ string: 'foo' }).timeout(100);
+              });
+            });
+          }).then(res => {
+            expect("Second query should have timed out").to.be.false;
+          }).catch(err => {
+            // mssql fails because it tires to rollback at the same time when update query is running
+            // hopefully for share really works though...
+            if (knex.client.dialect == 'mssql') {
+              expect(err.message).to.be.contain("Can't rollback transaction. There is a request in progress");
+            } else {
+              expect(err.message).to.be.contain('Defined query timeout of 100ms exceeded when running query');
+            }
+          });
+        });  
+    });
+
+  }); 
 };
